@@ -7,14 +7,14 @@ A small Foundry VTT V14 module that caps token vision to a GM-configured maximum
 Place this folder at:
 
 ```text
-{Foundry User Data}/Data/modules/vision-restrictor
+{Foundry User Data}/Data/modules/vision-restrictor-module-module
 ```
 
 Then restart Foundry, enable **Vision Restrictor** in your world, and reload the world.
 
 ## Usage
 
-Open **Configure Scene** and set **Vision Restrictor > Maximum Vision Range**.
+Open **Configure Scene**, go to the **Visibility** tab, and set **Vision Restrictor > Maximum Vision Range**.
 
 - Blank: use the world default.
 - `0`: disable the cap on this scene.
@@ -23,13 +23,13 @@ Open **Configure Scene** and set **Vision Restrictor > Maximum Vision Range**.
 You can also use the exposed API from a macro:
 
 ```js
-game.modules.get("vision-restrictor").api.setSceneMaxRange(75);
+game.modules.get("vision-restrictor-module").api.setSceneMaxRange(75);
 ```
 
 Clear the scene override:
 
 ```js
-game.modules.get("vision-restrictor").api.clearSceneMaxRange();
+game.modules.get("vision-restrictor-module").api.clearSceneMaxRange();
 ```
 
 ## Design note
@@ -42,7 +42,7 @@ This module caps existing vision. It does not grant vision. A token that cannot 
 For a public release, add these fields to `module.json` after you know the repository and release ZIP URLs:
 
 ```json
-"url": "https://github.com/YOUR-GITHUB-USER/vision-restrictor",
-"manifest": "https://raw.githubusercontent.com/YOUR-GITHUB-USER/vision-restrictor/main/module.json",
-"download": "https://github.com/YOUR-GITHUB-USER/vision-restrictor/releases/download/v0.1.0/vision-restrictor.zip"
+"url": "https://github.com/thystra/vision-restrictor-module",
+"manifest": "https://raw.githubusercontent.com/thystra/vision-restrictor-module/main/module.json",
+"download": "https://github.com/thystra/vision-restrictor-module/releases/download/v0.1.0/vision-restrictor-module.zip"
 ```

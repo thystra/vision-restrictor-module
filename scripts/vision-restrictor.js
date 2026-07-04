@@ -1,9 +1,10 @@
-const MODULE_ID = "vision-restrictor";
+const MODULE_ID = "vision-restrictor-module";
 const FLAG_MAX_RANGE = "maxRange";
 const SETTING_DEFAULT_MAX_RANGE = "defaultMaxRange";
 
 let originalSightRangeDescriptor = null;
 let originalOptimalSightRangeDescriptor = null;
+let tokenRangeGettersPatched = false;
 
 function localize(key) {
   return game.i18n.localize(`VISIONRESTRICTOR.${key}`);
@@ -24,41 +25,71 @@ function getActiveScene() {
   return canvas?.scene ?? game.scenes?.active ?? null;
 }
 
+function safeGetFlag(document, scope, key) {
+  try {
+    return document?.getFlag(scope, key);
+  } catch (err) {
+    console.warn(`${MODULE_ID} | Could not read flag ${scope}.${key}; ignoring scene override.`, err);
+    return undefined;
+  }
+}
+
+function getWorldDefaultRange() {
+  try {
+    return normalizeRange(game.settings.get(MODULE_ID, SETTING_DEFAULT_MAX_RANGE)) ?? 0;
+  } catch (err) {
+    console.warn(`${MODULE_ID} | Could not read world default vision range; treating as disabled.`, err);
+    return 0;
+  }
+}
+
 function getSceneMaxRange(scene = getActiveScene()) {
-  const sceneValue = normalizeRange(scene?.getFlag(MODULE_ID, FLAG_MAX_RANGE));
+  const sceneValue = normalizeRange(safeGetFlag(scene, MODULE_ID, FLAG_MAX_RANGE));
   if (sceneValue !== null) return sceneValue;
-  return normalizeRange(game.settings.get(MODULE_ID, SETTING_DEFAULT_MAX_RANGE)) ?? 0;
+
+  return getWorldDefaultRange();
 }
 
 function rangeUnitsToPixels(rangeUnits) {
   const dimensions = canvas?.dimensions;
-  if (!dimensions?.size || !dimensions?.distance) return rangeUnits;
+  if (!dimensions?.size || !dimensions?.distance) return null;
   return (rangeUnits * dimensions.size) / dimensions.distance;
 }
 
+function getTokenScene(token) {
+  return token?.scene ?? token?.document?.parent ?? getActiveScene();
+}
+
 function capPixelRange(token, originalRangePx) {
-  const maxRangeUnits = getSceneMaxRange(token?.scene ?? getActiveScene());
+  const maxRangeUnits = getSceneMaxRange(getTokenScene(token));
   if (!maxRangeUnits) return originalRangePx;
 
   const maxRangePx = rangeUnitsToPixels(maxRangeUnits);
   if (!Number.isFinite(maxRangePx) || maxRangePx <= 0) return originalRangePx;
 
-  // Do not grant vision. Only cap existing vision.
-  if (!Number.isFinite(originalRangePx)) return maxRangePx;
+  // Do not grant vision. Only cap vision that already exists.
+  if (originalRangePx === Number.POSITIVE_INFINITY) return maxRangePx;
+  if (!Number.isFinite(originalRangePx)) return originalRangePx;
+  if (originalRangePx <= 0) return originalRangePx;
+
   return Math.min(originalRangePx, maxRangePx);
 }
 
 function findPropertyDescriptor(object, property) {
   let prototype = object;
+
   while (prototype) {
     const descriptor = Object.getOwnPropertyDescriptor(prototype, property);
     if (descriptor) return descriptor;
     prototype = Object.getPrototypeOf(prototype);
   }
+
   return null;
 }
 
 function patchTokenRangeGetters() {
+  if (tokenRangeGettersPatched) return;
+
   const TokenClass = foundry?.canvas?.placeables?.Token ?? globalThis.Token;
   if (!TokenClass?.prototype) {
     console.warn(`${MODULE_ID} | Could not find Foundry Token class; vision restriction was not installed.`);
@@ -89,6 +120,7 @@ function patchTokenRangeGetters() {
     }
   });
 
+  tokenRangeGettersPatched = true;
   console.log(`${MODULE_ID} | Token vision range cap installed.`);
 }
 
@@ -96,20 +128,31 @@ function refreshVision() {
   if (!canvas?.ready) return;
 
   for (const token of canvas.tokens?.placeables ?? []) {
-    token.initializeSources?.();
+    try {
+      token.initializeSources?.();
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Could not reinitialize vision sources for token ${token?.name ?? token?.id ?? "unknown"}.`, err);
+    }
   }
 
-  // Different Foundry builds/modules expose slightly different refresh surfaces.
-  // Use the most specific calls when present, with safe fallbacks.
-  canvas.perception?.update?.({
-    initializeLighting: true,
-    initializeVision: true,
-    refreshLighting: true,
-    refreshVision: true,
-    refreshTiles: true
-  }, true);
-  canvas.effects?.refreshLighting?.();
-  canvas.visibility?.refresh?.();
+  try {
+    canvas.perception?.update?.({
+      initializeLighting: true,
+      initializeVision: true,
+      refreshLighting: true,
+      refreshVision: true,
+      refreshTiles: true
+    }, true);
+  } catch (err) {
+    console.warn(`${MODULE_ID} | Could not refresh canvas perception.`, err);
+  }
+
+  try {
+    canvas.effects?.refreshLighting?.();
+    canvas.visibility?.refresh?.();
+  } catch (err) {
+    console.warn(`${MODULE_ID} | Could not refresh lighting or visibility layers.`, err);
+  }
 }
 
 async function setSceneMaxRange(range, scene = getActiveScene()) {
@@ -117,9 +160,11 @@ async function setSceneMaxRange(range, scene = getActiveScene()) {
     ui.notifications.warn(localize("notifications.worldOnly"));
     return;
   }
+
   if (!scene) return;
 
   const normalized = normalizeRange(range);
+
   if (normalized === null) {
     await scene.unsetFlag(MODULE_ID, FLAG_MAX_RANGE);
     ui.notifications.info(localize("notifications.sceneCleared"));
@@ -127,13 +172,38 @@ async function setSceneMaxRange(range, scene = getActiveScene()) {
     await scene.setFlag(MODULE_ID, FLAG_MAX_RANGE, normalized);
     ui.notifications.info(format("notifications.sceneSet", { range: normalized }));
   }
+
   refreshVision();
+}
+
+function getFormElement(html) {
+  if (html instanceof HTMLElement) return html;
+  if (html?.[0] instanceof HTMLElement) return html[0];
+  return null;
+}
+
+function findSceneConfigTarget(form) {
+  const selectors = [
+    '[data-application-part="visibility"]',
+    '.tab[data-tab="visibility"]',
+    'section[data-tab="visibility"]',
+    '[data-tab="visibility"]',
+    '.tab.active',
+    'section.active'
+  ];
+
+  for (const selector of selectors) {
+    const target = form.querySelector(selector);
+    if (target) return target;
+  }
+
+  return form;
 }
 
 function injectSceneConfig(app, html) {
   if (!game.user.isGM) return;
 
-  const element = html instanceof HTMLElement ? html : html?.[0];
+  const element = getFormElement(html);
   if (!element) return;
 
   const scene = app.document ?? app.object;
@@ -143,11 +213,11 @@ function injectSceneConfig(app, html) {
   const existing = form.querySelector(`[data-${MODULE_ID}-scene-config]`);
   if (existing) existing.remove();
 
-  const current = scene.getFlag(MODULE_ID, FLAG_MAX_RANGE);
+  const current = safeGetFlag(scene, MODULE_ID, FLAG_MAX_RANGE);
 
   const fieldset = document.createElement("fieldset");
   fieldset.classList.add("vision-restrictor-fieldset");
-  fieldset.dataset[`${MODULE_ID}SceneConfig`] = "true";
+  fieldset.setAttribute(`data-${MODULE_ID}-scene-config`, "true");
 
   const legend = document.createElement("legend");
   legend.textContent = localize("sceneConfig.legend");
@@ -169,7 +239,7 @@ function injectSceneConfig(app, html) {
   input.min = "0";
   input.step = "1";
   input.name = `flags.${MODULE_ID}.${FLAG_MAX_RANGE}`;
-  input.placeholder = String(game.settings.get(MODULE_ID, SETTING_DEFAULT_MAX_RANGE) ?? 0);
+  input.placeholder = String(getWorldDefaultRange());
   input.value = current === null || current === undefined ? "" : String(current);
 
   inputWrapper.append(input);
@@ -181,12 +251,7 @@ function injectSceneConfig(app, html) {
   hint.textContent = localize("sceneConfig.fieldHint");
   fieldset.append(hint);
 
-  // Put this near the lighting/vision-related settings if possible; otherwise append at the end.
-  const target = form.querySelector('[data-tab="lighting"]')
-    ?? form.querySelector('[data-tab="vision"]')
-    ?? form.querySelector('.tab.active')
-    ?? form;
-  target.append(fieldset);
+  findSceneConfigTarget(form).append(fieldset);
 }
 
 Hooks.once("init", () => {
@@ -206,16 +271,28 @@ Hooks.once("init", () => {
 
 Hooks.once("ready", () => {
   const module = game.modules.get(MODULE_ID);
-  module.api = {
-    getSceneMaxRange,
-    setSceneMaxRange,
-    clearSceneMaxRange: (scene = getActiveScene()) => setSceneMaxRange(null, scene),
-    refreshVision
-  };
+  if (module) {
+    module.api = {
+      getSceneMaxRange,
+      setSceneMaxRange,
+      clearSceneMaxRange: (scene = getActiveScene()) => setSceneMaxRange(null, scene),
+      refreshVision
+    };
+  }
 });
 
 Hooks.on("canvasReady", refreshVision);
+
 Hooks.on("updateScene", (scene, changes) => {
-  if (foundry.utils.hasProperty(changes, `flags.${MODULE_ID}.${FLAG_MAX_RANGE}`)) refreshVision();
+  const exactFlagPath = `flags.${MODULE_ID}.${FLAG_MAX_RANGE}`;
+  const moduleFlagPath = `flags.${MODULE_ID}`;
+
+  if (
+    foundry.utils.hasProperty(changes, exactFlagPath)
+    || foundry.utils.hasProperty(changes, moduleFlagPath)
+  ) {
+    refreshVision();
+  }
 });
+
 Hooks.on("renderSceneConfig", injectSceneConfig);
