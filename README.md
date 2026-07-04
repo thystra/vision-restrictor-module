@@ -46,3 +46,12 @@ For a public release, add these fields to `module.json` after you know the repos
 "manifest": "https://raw.githubusercontent.com/thystra/vision-restrictor-module/main/module.json",
 "download": "https://github.com/thystra/vision-restrictor-module/releases/download/v0.1.0/vision-restrictor-module.zip"
 ```
+
+
+## Debugging
+
+With one or more tokens selected, this macro reports the active cap and the capped V14 vision source data:
+
+```js
+game.modules.get("vision-restrictor-module").api.debugControlledTokens();
+```

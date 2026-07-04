@@ -6,7 +6,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${ROOT}/../${MODULE_ID}.zip"
 
 rm -f "$OUT"
-
 (
   cd "$ROOT/.."
   zip -r "$OUT" "$MODULE_ID" \
