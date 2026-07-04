@@ -1,13 +1,14 @@
 const MODULE_ID = "vision-restrictor-module";
 const FLAG_MAX_RANGE = "maxRange";
 const SETTING_DEFAULT_MAX_RANGE = "defaultMaxRange";
+const SCENE_CONFIG_ATTR = "data-vision-restrictor-module-scene-config";
 
 const WRAPPED_GET_VISION_SOURCE_DATA = Symbol.for(`${MODULE_ID}.wrappedGetVisionSourceData`);
+const WRAPPED_INITIALIZE_VISION_SOURCE = Symbol.for(`${MODULE_ID}.wrappedInitializeVisionSource`);
 const WRAPPED_SIGHT_RANGE = Symbol.for(`${MODULE_ID}.wrappedSightRange`);
 const WRAPPED_OPTIMAL_SIGHT_RANGE = Symbol.for(`${MODULE_ID}.wrappedOptimalSightRange`);
 
-let originalSightRangeDescriptor = null;
-let originalOptimalSightRangeDescriptor = null;
+const LIBWRAPPER_REGISTRATIONS = new Set();
 
 function localize(key) {
   return game.i18n.localize(`VISIONRESTRICTOR.${key}`);
@@ -45,7 +46,7 @@ function getSceneMaxRange(scene = getActiveScene()) {
 }
 
 function rangeUnitsToPixels(rangeUnits, token = null) {
-  if (token?.getLightRadius) return token.getLightRadius(rangeUnits);
+  if (typeof token?.getLightRadius === "function") return token.getLightRadius(rangeUnits);
 
   const dimensions = canvas?.dimensions;
   if (!dimensions?.size || !dimensions?.distance) return rangeUnits;
@@ -61,16 +62,32 @@ function getMaxRangePx(token = null) {
   return maxRangePx;
 }
 
+function capNumericPixelValue(originalValue, maxRangePx) {
+  if (!maxRangePx) return originalValue;
+
+  const number = Number(originalValue);
+  if (number === Infinity) return maxRangePx;
+  if (!Number.isFinite(number)) return originalValue;
+  if (number <= 0) return originalValue;
+  return Math.min(number, maxRangePx);
+}
+
 function capPixelRange(token, originalRangePx) {
-  const maxRangePx = getMaxRangePx(token);
-  if (!maxRangePx) return originalRangePx;
+  return capNumericPixelValue(originalRangePx, getMaxRangePx(token));
+}
 
-  // Do not grant vision. Only cap an existing finite or intentionally-infinite range.
-  if (originalRangePx === Infinity) return maxRangePx;
-  if (!Number.isFinite(originalRangePx)) return originalRangePx;
-  if (originalRangePx <= 0) return originalRangePx;
+function capDetectionModeRanges(token, detectionModes) {
+  const maxRangeUnits = getSceneMaxRange(token?.scene ?? getActiveScene());
+  if (!Array.isArray(detectionModes) || maxRangeUnits <= 0) return detectionModes;
 
-  return Math.min(originalRangePx, maxRangePx);
+  return detectionModes.map((mode) => {
+    if (!mode || typeof mode !== "object") return mode;
+    const range = Number(mode.range);
+
+    if (range === 0 && mode.enabled !== false) return { ...mode, range: maxRangeUnits };
+    if (!Number.isFinite(range) || range < 0) return mode;
+    return { ...mode, range: Math.min(range, maxRangeUnits) };
+  });
 }
 
 function capVisionSourceData(token, data) {
@@ -79,30 +96,31 @@ function capVisionSourceData(token, data) {
 
   const capped = { ...data };
 
-  // In V14, Token#_getVisionSourceData returns the data used to initialize the
-  // VisionSource. Radius is the important value here; getter-only patching can
-  // miss module/system overrides which directly build or mutate source data.
-  if ("radius" in capped) capped.radius = capPixelRange(token, Number(capped.radius));
-
-  // Some systems/modules expose parallel range fields. Cap them defensively when
-  // they are pixel-like numeric fields, but leave absent fields untouched.
-  for (const key of ["sightRange", "visionRange", "range"]) {
-    if (key in capped) capped[key] = capPixelRange(token, Number(capped[key]));
+  for (const key of ["radius", "externalRadius", "sightRange", "visionRange", "range"]) {
+    if (key in capped) capped[key] = capNumericPixelValue(capped[key], maxRangePx);
   }
 
-  // Token detection modes store ranges in scene units, not pixels. Cap those too
-  // so modules that lean on detection modes cannot see past the environmental cap.
-  const maxRangeUnits = getSceneMaxRange(token?.scene ?? getActiveScene());
-  if (Array.isArray(capped.detectionModes) && maxRangeUnits > 0) {
-    capped.detectionModes = capped.detectionModes.map((mode) => {
-      if (!mode || typeof mode !== "object") return mode;
-      const range = Number(mode.range);
-      if (!Number.isFinite(range) || range <= 0) return mode;
-      return { ...mode, range: Math.min(range, maxRangeUnits) };
-    });
-  }
+  if ("detectionModes" in capped) capped.detectionModes = capDetectionModeRanges(token, capped.detectionModes);
 
   return capped;
+}
+
+function capInitializedVisionSource(token) {
+  const maxRangePx = getMaxRangePx(token);
+  const source = token?.vision;
+  if (!maxRangePx || !source) return;
+
+  try {
+    if (source.data && typeof source.data === "object") {
+      for (const key of ["radius", "externalRadius", "sightRange", "visionRange", "range"]) {
+        if (key in source.data) source.data[key] = capNumericPixelValue(source.data[key], maxRangePx);
+      }
+    }
+
+    if ("radius" in source) source.radius = capNumericPixelValue(source.radius, maxRangePx);
+  } catch (err) {
+    console.debug(`${MODULE_ID} | Could not mutate initialized vision source; source-data cap is still active.`, err);
+  }
 }
 
 function findPropertyDescriptor(object, property) {
@@ -119,28 +137,46 @@ function getTokenClass() {
   return foundry?.canvas?.placeables?.Token ?? globalThis.Token ?? null;
 }
 
-function patchTokenVisionSourceData() {
-  const TokenClass = getTokenClass();
-  const proto = TokenClass?.prototype;
-  if (!proto) {
-    console.warn(`${MODULE_ID} | Could not find Foundry Token class; vision source data cap was not installed.`);
+function canUseLibWrapper() {
+  return typeof globalThis.libWrapper?.register === "function" && game.modules.get("lib-wrapper")?.active;
+}
+
+function registerLibWrapperOnce(target, wrapper, type = "WRAPPER") {
+  if (!canUseLibWrapper()) return false;
+  if (LIBWRAPPER_REGISTRATIONS.has(target)) return true;
+
+  try {
+    globalThis.libWrapper.register(MODULE_ID, target, wrapper, type);
+    LIBWRAPPER_REGISTRATIONS.add(target);
+    return true;
+  } catch (err) {
+    console.warn(`${MODULE_ID} | libWrapper registration failed for ${target}; falling back where possible.`, err);
     return false;
   }
+}
 
-  const current = proto._getVisionSourceData;
+function patchTokenVisionSourceData() {
+  const target = "foundry.canvas.placeables.Token.prototype._getVisionSourceData";
+  if (registerLibWrapperOnce(target, function visionRestrictorGetVisionSourceData(wrapped, ...args) {
+    return capVisionSourceData(this, wrapped(...args));
+  })) {
+    console.log(`${MODULE_ID} | Token vision source data cap installed with libWrapper.`);
+    return true;
+  }
+
+  const TokenClass = getTokenClass();
+  const proto = TokenClass?.prototype;
+  const current = proto?._getVisionSourceData;
   if (typeof current !== "function") {
     console.warn(`${MODULE_ID} | Could not find Token#_getVisionSourceData; vision source data cap was not installed.`);
     return false;
   }
-
   if (current[WRAPPED_GET_VISION_SOURCE_DATA]) return true;
 
   const wrapped = function visionRestrictorGetVisionSourceData(...args) {
-    const data = current.apply(this, args);
-    return capVisionSourceData(this, data);
+    return capVisionSourceData(this, current.apply(this, args));
   };
   wrapped[WRAPPED_GET_VISION_SOURCE_DATA] = true;
-  wrapped._visionRestrictorOriginal = current;
 
   Object.defineProperty(proto, "_getVisionSourceData", {
     configurable: true,
@@ -148,7 +184,41 @@ function patchTokenVisionSourceData() {
     value: wrapped
   });
 
-  console.log(`${MODULE_ID} | Token vision source data cap installed.`);
+  console.log(`${MODULE_ID} | Token vision source data cap installed directly.`);
+  return true;
+}
+
+function patchTokenInitializeVisionSource() {
+  const target = "foundry.canvas.placeables.Token.prototype.initializeVisionSource";
+  if (registerLibWrapperOnce(target, function visionRestrictorInitializeVisionSource(wrapped, ...args) {
+    const result = wrapped(...args);
+    capInitializedVisionSource(this);
+    return result;
+  })) {
+    console.log(`${MODULE_ID} | Token initializeVisionSource post-cap installed with libWrapper.`);
+    return true;
+  }
+
+  const TokenClass = getTokenClass();
+  const proto = TokenClass?.prototype;
+  const current = proto?.initializeVisionSource;
+  if (typeof current !== "function") return false;
+  if (current[WRAPPED_INITIALIZE_VISION_SOURCE]) return true;
+
+  const wrapped = function visionRestrictorInitializeVisionSource(...args) {
+    const result = current.apply(this, args);
+    capInitializedVisionSource(this);
+    return result;
+  };
+  wrapped[WRAPPED_INITIALIZE_VISION_SOURCE] = true;
+
+  Object.defineProperty(proto, "initializeVisionSource", {
+    configurable: true,
+    writable: true,
+    value: wrapped
+  });
+
+  console.log(`${MODULE_ID} | Token initializeVisionSource post-cap installed directly.`);
   return true;
 }
 
@@ -160,11 +230,12 @@ function patchTokenRangeGetters() {
     return false;
   }
 
-  originalSightRangeDescriptor = findPropertyDescriptor(proto, "sightRange");
-  originalOptimalSightRangeDescriptor = findPropertyDescriptor(proto, "optimalSightRange");
+  const sightRangeDescriptor = findPropertyDescriptor(proto, "sightRange");
+  const optimalSightRangeDescriptor = findPropertyDescriptor(proto, "optimalSightRange");
+  let installed = false;
 
-  if (originalSightRangeDescriptor?.get && !originalSightRangeDescriptor.get[WRAPPED_SIGHT_RANGE]) {
-    const originalGet = originalSightRangeDescriptor.get;
+  if (sightRangeDescriptor?.get && !sightRangeDescriptor.get[WRAPPED_SIGHT_RANGE]) {
+    const originalGet = sightRangeDescriptor.get;
     const wrappedGet = function visionRestrictorSightRange() {
       return capPixelRange(this, originalGet.call(this));
     };
@@ -174,10 +245,11 @@ function patchTokenRangeGetters() {
       configurable: true,
       get: wrappedGet
     });
+    installed = true;
   }
 
-  if (originalOptimalSightRangeDescriptor?.get && !originalOptimalSightRangeDescriptor.get[WRAPPED_OPTIMAL_SIGHT_RANGE]) {
-    const originalGet = originalOptimalSightRangeDescriptor.get;
+  if (optimalSightRangeDescriptor?.get && !optimalSightRangeDescriptor.get[WRAPPED_OPTIMAL_SIGHT_RANGE]) {
+    const originalGet = optimalSightRangeDescriptor.get;
     const wrappedGet = function visionRestrictorOptimalSightRange() {
       return capPixelRange(this, originalGet.call(this));
     };
@@ -187,22 +259,25 @@ function patchTokenRangeGetters() {
       configurable: true,
       get: wrappedGet
     });
+    installed = true;
   }
 
-  console.log(`${MODULE_ID} | Token vision range getter cap installed.`);
-  return true;
+  if (installed) console.log(`${MODULE_ID} | Token vision range getter cap installed.`);
+  return installed;
 }
 
 function patchTokenVision() {
   const dataPatch = patchTokenVisionSourceData();
+  const initializePatch = patchTokenInitializeVisionSource();
   const getterPatch = patchTokenRangeGetters();
-  return dataPatch || getterPatch;
+  return dataPatch || initializePatch || getterPatch;
 }
 
 function refreshVision() {
   if (!canvas?.ready) return;
 
   try {
+    canvas.visibility?.initializeSources?.();
     for (const token of canvas.tokens?.placeables ?? []) token.initializeSources?.();
 
     if (typeof canvas.perception?.initialize === "function") {
@@ -219,6 +294,7 @@ function refreshVision() {
 
     canvas.effects?.refreshLighting?.();
     canvas.visibility?.refresh?.();
+    canvas.visibility?.refreshVisibility?.();
   } catch (err) {
     console.warn(`${MODULE_ID} | Could not refresh canvas perception.`, err);
   }
@@ -252,12 +328,12 @@ function injectSceneConfig(app, html) {
   if (!scene) return;
 
   const form = element.querySelector("form") ?? element;
-  form.querySelector(`[data-${MODULE_ID}-scene-config]`)?.remove();
+  form.querySelector(`[${SCENE_CONFIG_ATTR}]`)?.remove();
 
   const current = safeGetFlag(scene, MODULE_ID, FLAG_MAX_RANGE);
   const fieldset = document.createElement("fieldset");
   fieldset.classList.add("vision-restrictor-fieldset");
-  fieldset.dataset[`${MODULE_ID}SceneConfig`] = "true";
+  fieldset.setAttribute(SCENE_CONFIG_ATTR, "true");
 
   const legend = document.createElement("legend");
   legend.textContent = localize("sceneConfig.legend");
@@ -301,21 +377,41 @@ function injectSceneConfig(app, html) {
   target.append(fieldset);
 }
 
+function getTokenDebug(token) {
+  const sourceData = typeof token?._getVisionSourceData === "function" ? token._getVisionSourceData() : null;
+  return {
+    name: token?.name,
+    sceneMaxRangeUnits: getSceneMaxRange(token?.scene),
+    maxRangePx: getMaxRangePx(token),
+    sightRange: token?.sightRange,
+    optimalSightRange: token?.optimalSightRange,
+    sourceData,
+    initializedVisionSourceData: token?.vision?.data ?? null,
+    initializedVisionSourceRadius: token?.vision?.data?.radius ?? token?.vision?.radius ?? null,
+    canvasTokenVision: canvas?.visibility?.tokenVision,
+    isGM: game.user.isGM,
+    controlled: token?.controlled
+  };
+}
+
 function debugControlledTokens() {
-  return (canvas.tokens?.controlled ?? []).map((token) => {
-    const sourceData = typeof token._getVisionSourceData === "function" ? token._getVisionSourceData() : null;
-    return {
-      name: token.name,
-      sceneMaxRangeUnits: getSceneMaxRange(token.scene),
-      maxRangePx: getMaxRangePx(token),
-      sightRange: token.sightRange,
-      optimalSightRange: token.optimalSightRange,
-      sourceData,
-      initializedVisionSourceRadius: token.vision?.data?.radius ?? token.vision?.radius ?? null,
-      isGM: game.user.isGM,
-      controlled: token.controlled
-    };
-  });
+  return (canvas.tokens?.controlled ?? []).map((token) => getTokenDebug(token));
+}
+
+function debugState() {
+  const scene = getActiveScene();
+  return {
+    moduleId: MODULE_ID,
+    active: game.modules.get(MODULE_ID)?.active,
+    libWrapperActive: canUseLibWrapper(),
+    scene: scene?.name,
+    sceneOverride: safeGetFlag(scene, MODULE_ID, FLAG_MAX_RANGE),
+    worldDefault: game.settings.get(MODULE_ID, SETTING_DEFAULT_MAX_RANGE),
+    effectiveMaxRangeUnits: getSceneMaxRange(scene),
+    canvasReady: canvas?.ready,
+    canvasTokenVision: canvas?.visibility?.tokenVision,
+    controlledTokens: debugControlledTokens()
+  };
 }
 
 Hooks.once("init", () => {
@@ -334,8 +430,6 @@ Hooks.once("init", () => {
 });
 
 Hooks.once("ready", () => {
-  // Re-apply after systems/modules such as dnd5e or Vision 5e finish any late
-  // token vision patching. The wrapper is idempotent.
   patchTokenVision();
 
   const module = game.modules.get(MODULE_ID);
@@ -344,7 +438,8 @@ Hooks.once("ready", () => {
     setSceneMaxRange,
     clearSceneMaxRange: (scene = getActiveScene()) => setSceneMaxRange(null, scene),
     refreshVision,
-    debugControlledTokens
+    debugControlledTokens,
+    debugState
   };
 
   refreshVision();

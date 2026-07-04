@@ -55,3 +55,18 @@ With one or more tokens selected, this macro reports the active cap and the capp
 ```js
 game.modules.get("vision-restrictor-module").api.debugControlledTokens();
 ```
+
+
+## Debugging
+
+With one or more tokens selected, this macro reports the active cap and the capped V14 vision source data:
+
+```js
+game.modules.get("vision-restrictor-module").api.debugControlledTokens();
+```
+
+For a full module/scene state dump:
+
+```js
+game.modules.get("vision-restrictor-module").api.debugState();
+```
