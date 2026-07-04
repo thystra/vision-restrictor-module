@@ -1,10 +1,12 @@
 {
   "VISIONRESTRICTOR.settings.defaultMaxRange.name": "Default Maximum Vision Range",
-  "VISIONRESTRICTOR.settings.defaultMaxRange.hint": "Maximum token vision range in scene distance units. Use 0 to disable globally. A scene can override this value.",
+  "VISIONRESTRICTOR.settings.defaultMaxRange.hint": "Maximum token vision range in scene distance units, such as feet or meters depending on the scene. Use 0 to disable globally. A scene can override this value.",
   "VISIONRESTRICTOR.sceneConfig.fieldLabel": "Maximum Vision Range",
-  "VISIONRESTRICTOR.sceneConfig.fieldHint": "Caps token vision on this scene in scene distance units. Leave blank to use the world default. Use 0 to disable on this scene.",
+  "VISIONRESTRICTOR.sceneConfig.fieldHint": "Hard-caps token vision on this scene using the scene distance units, such as feet or meters. Leave blank to use the world default. Use 0 to disable on this scene.",
   "VISIONRESTRICTOR.sceneConfig.legend": "Vision Restrictor",
   "VISIONRESTRICTOR.notifications.sceneSet": "Vision Restrictor: scene maximum vision set to {range}.",
   "VISIONRESTRICTOR.notifications.sceneCleared": "Vision Restrictor: scene override cleared; using world default.",
-  "VISIONRESTRICTOR.notifications.worldOnly": "Vision Restrictor settings can only be changed by a GM."
+  "VISIONRESTRICTOR.notifications.worldOnly": "Vision Restrictor settings can only be changed by a GM.",
+  "VISIONRESTRICTOR.settings.hardMaskAlpha.name": "Hard Vision Mask Opacity",
+  "VISIONRESTRICTOR.settings.hardMaskAlpha.hint": "Opacity of the hard blackout beyond the maximum vision range. Use 1 for fully black blocked vision, or a lower value for testing."
 }

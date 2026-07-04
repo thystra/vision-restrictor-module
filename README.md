@@ -70,3 +70,10 @@ For a full module/scene state dump:
 ```js
 game.modules.get("vision-restrictor-module").api.debugState();
 ```
+
+### Hard blackout behavior
+
+Vision Restrictor now applies a hard blackout mask outside the configured range. The range is interpreted in the active scene distance units, such as feet or meters, not grid squares. For example, in a D&D scene where one grid square is 5 feet, a value of `75` means 75 feet, or 15 grid squares.
+
+This is intentional for fog, smoke, haze, blizzards, darkness-like magical obscurity, or other effects that block sight even when the scene has daylight or global illumination enabled. Use `0` on a scene to disable the cap for that scene.
+

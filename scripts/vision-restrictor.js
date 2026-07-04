@@ -1,14 +1,16 @@
 const MODULE_ID = "vision-restrictor-module";
 const FLAG_MAX_RANGE = "maxRange";
 const SETTING_DEFAULT_MAX_RANGE = "defaultMaxRange";
-const SCENE_CONFIG_ATTR = "data-vision-restrictor-module-scene-config";
+const SETTING_HARD_MASK_ALPHA = "hardMaskAlpha";
 
 const WRAPPED_GET_VISION_SOURCE_DATA = Symbol.for(`${MODULE_ID}.wrappedGetVisionSourceData`);
 const WRAPPED_INITIALIZE_VISION_SOURCE = Symbol.for(`${MODULE_ID}.wrappedInitializeVisionSource`);
 const WRAPPED_SIGHT_RANGE = Symbol.for(`${MODULE_ID}.wrappedSightRange`);
 const WRAPPED_OPTIMAL_SIGHT_RANGE = Symbol.for(`${MODULE_ID}.wrappedOptimalSightRange`);
 
-const LIBWRAPPER_REGISTRATIONS = new Set();
+let originalSightRangeDescriptor = null;
+let originalOptimalSightRangeDescriptor = null;
+let hardMask = null;
 
 function localize(key) {
   return game.i18n.localize(`VISIONRESTRICTOR.${key}`);
@@ -41,12 +43,11 @@ function safeGetFlag(document, scope, key) {
 function getSceneMaxRange(scene = getActiveScene()) {
   const sceneValue = normalizeRange(safeGetFlag(scene, MODULE_ID, FLAG_MAX_RANGE));
   if (sceneValue !== null) return sceneValue;
-
   return normalizeRange(game.settings.get(MODULE_ID, SETTING_DEFAULT_MAX_RANGE)) ?? 0;
 }
 
 function rangeUnitsToPixels(rangeUnits, token = null) {
-  if (typeof token?.getLightRadius === "function") return token.getLightRadius(rangeUnits);
+  if (token?.getLightRadius) return token.getLightRadius(rangeUnits);
 
   const dimensions = canvas?.dimensions;
   if (!dimensions?.size || !dimensions?.distance) return rangeUnits;
@@ -62,32 +63,16 @@ function getMaxRangePx(token = null) {
   return maxRangePx;
 }
 
-function capNumericPixelValue(originalValue, maxRangePx) {
-  if (!maxRangePx) return originalValue;
-
-  const number = Number(originalValue);
-  if (number === Infinity) return maxRangePx;
-  if (!Number.isFinite(number)) return originalValue;
-  if (number <= 0) return originalValue;
-  return Math.min(number, maxRangePx);
-}
-
 function capPixelRange(token, originalRangePx) {
-  return capNumericPixelValue(originalRangePx, getMaxRangePx(token));
-}
+  const maxRangePx = getMaxRangePx(token);
+  if (!maxRangePx) return originalRangePx;
 
-function capDetectionModeRanges(token, detectionModes) {
-  const maxRangeUnits = getSceneMaxRange(token?.scene ?? getActiveScene());
-  if (!Array.isArray(detectionModes) || maxRangeUnits <= 0) return detectionModes;
+  // Do not grant vision. Only cap an existing finite or intentionally-infinite range.
+  if (originalRangePx === Infinity) return maxRangePx;
+  if (!Number.isFinite(originalRangePx)) return originalRangePx;
+  if (originalRangePx <= 0) return originalRangePx;
 
-  return detectionModes.map((mode) => {
-    if (!mode || typeof mode !== "object") return mode;
-    const range = Number(mode.range);
-
-    if (range === 0 && mode.enabled !== false) return { ...mode, range: maxRangeUnits };
-    if (!Number.isFinite(range) || range < 0) return mode;
-    return { ...mode, range: Math.min(range, maxRangeUnits) };
-  });
+  return Math.min(originalRangePx, maxRangePx);
 }
 
 function capVisionSourceData(token, data) {
@@ -96,31 +81,24 @@ function capVisionSourceData(token, data) {
 
   const capped = { ...data };
 
-  for (const key of ["radius", "externalRadius", "sightRange", "visionRange", "range"]) {
-    if (key in capped) capped[key] = capNumericPixelValue(capped[key], maxRangePx);
+  // In V14, Token#_getVisionSourceData returns the data used to initialize the
+  // VisionSource. This caps the underlying source, while the hard mask below
+  // handles globally illuminated scenes where the scene itself remains visible.
+  for (const key of ["radius", "sightRange", "visionRange", "range", "externalRadius"]) {
+    if (key in capped) capped[key] = capPixelRange(token, Number(capped[key]));
   }
 
-  if ("detectionModes" in capped) capped.detectionModes = capDetectionModeRanges(token, capped.detectionModes);
+  const maxRangeUnits = getSceneMaxRange(token?.scene ?? getActiveScene());
+  if (Array.isArray(capped.detectionModes) && maxRangeUnits > 0) {
+    capped.detectionModes = capped.detectionModes.map((mode) => {
+      if (!mode || typeof mode !== "object") return mode;
+      const range = Number(mode.range);
+      if (!Number.isFinite(range) || range <= 0) return mode;
+      return { ...mode, range: Math.min(range, maxRangeUnits) };
+    });
+  }
 
   return capped;
-}
-
-function capInitializedVisionSource(token) {
-  const maxRangePx = getMaxRangePx(token);
-  const source = token?.vision;
-  if (!maxRangePx || !source) return;
-
-  try {
-    if (source.data && typeof source.data === "object") {
-      for (const key of ["radius", "externalRadius", "sightRange", "visionRange", "range"]) {
-        if (key in source.data) source.data[key] = capNumericPixelValue(source.data[key], maxRangePx);
-      }
-    }
-
-    if ("radius" in source) source.radius = capNumericPixelValue(source.radius, maxRangePx);
-  } catch (err) {
-    console.debug(`${MODULE_ID} | Could not mutate initialized vision source; source-data cap is still active.`, err);
-  }
 }
 
 function findPropertyDescriptor(object, property) {
@@ -137,89 +115,75 @@ function getTokenClass() {
   return foundry?.canvas?.placeables?.Token ?? globalThis.Token ?? null;
 }
 
-function canUseLibWrapper() {
-  return typeof globalThis.libWrapper?.register === "function" && game.modules.get("lib-wrapper")?.active;
-}
-
-function registerLibWrapperOnce(target, wrapper, type = "WRAPPER") {
-  if (!canUseLibWrapper()) return false;
-  if (LIBWRAPPER_REGISTRATIONS.has(target)) return true;
-
-  try {
-    globalThis.libWrapper.register(MODULE_ID, target, wrapper, type);
-    LIBWRAPPER_REGISTRATIONS.add(target);
-    return true;
-  } catch (err) {
-    console.warn(`${MODULE_ID} | libWrapper registration failed for ${target}; falling back where possible.`, err);
-    return false;
-  }
-}
-
 function patchTokenVisionSourceData() {
-  const target = "foundry.canvas.placeables.Token.prototype._getVisionSourceData";
-  if (registerLibWrapperOnce(target, function visionRestrictorGetVisionSourceData(wrapped, ...args) {
-    return capVisionSourceData(this, wrapped(...args));
-  })) {
-    console.log(`${MODULE_ID} | Token vision source data cap installed with libWrapper.`);
-    return true;
-  }
-
   const TokenClass = getTokenClass();
   const proto = TokenClass?.prototype;
-  const current = proto?._getVisionSourceData;
+  if (!proto) {
+    console.warn(`${MODULE_ID} | Could not find Foundry Token class; vision source data cap was not installed.`);
+    return false;
+  }
+
+  const current = proto._getVisionSourceData;
   if (typeof current !== "function") {
     console.warn(`${MODULE_ID} | Could not find Token#_getVisionSourceData; vision source data cap was not installed.`);
     return false;
   }
-  if (current[WRAPPED_GET_VISION_SOURCE_DATA]) return true;
 
-  const wrapped = function visionRestrictorGetVisionSourceData(...args) {
-    return capVisionSourceData(this, current.apply(this, args));
-  };
-  wrapped[WRAPPED_GET_VISION_SOURCE_DATA] = true;
+  if (!current[WRAPPED_GET_VISION_SOURCE_DATA]) {
+    const wrapped = function visionRestrictorGetVisionSourceData(...args) {
+      const data = current.apply(this, args);
+      return capVisionSourceData(this, data);
+    };
+    wrapped[WRAPPED_GET_VISION_SOURCE_DATA] = true;
+    wrapped._visionRestrictorOriginal = current;
 
-  Object.defineProperty(proto, "_getVisionSourceData", {
-    configurable: true,
-    writable: true,
-    value: wrapped
-  });
+    Object.defineProperty(proto, "_getVisionSourceData", {
+      configurable: true,
+      writable: true,
+      value: wrapped
+    });
 
-  console.log(`${MODULE_ID} | Token vision source data cap installed directly.`);
+    console.log(`${MODULE_ID} | Token vision source data cap installed.`);
+  }
+
+  const currentInitialize = proto.initializeVisionSource;
+  if (typeof currentInitialize === "function" && !currentInitialize[WRAPPED_INITIALIZE_VISION_SOURCE]) {
+    const wrappedInitialize = function visionRestrictorInitializeVisionSource(...args) {
+      const result = currentInitialize.apply(this, args);
+      capInitializedVisionSource(this);
+      queueHardMaskRefresh();
+      return result;
+    };
+    wrappedInitialize[WRAPPED_INITIALIZE_VISION_SOURCE] = true;
+    wrappedInitialize._visionRestrictorOriginal = currentInitialize;
+
+    Object.defineProperty(proto, "initializeVisionSource", {
+      configurable: true,
+      writable: true,
+      value: wrappedInitialize
+    });
+
+    console.log(`${MODULE_ID} | Token vision source initialize cap installed.`);
+  }
+
   return true;
 }
 
-function patchTokenInitializeVisionSource() {
-  const target = "foundry.canvas.placeables.Token.prototype.initializeVisionSource";
-  if (registerLibWrapperOnce(target, function visionRestrictorInitializeVisionSource(wrapped, ...args) {
-    const result = wrapped(...args);
-    capInitializedVisionSource(this);
-    return result;
-  })) {
-    console.log(`${MODULE_ID} | Token initializeVisionSource post-cap installed with libWrapper.`);
-    return true;
+function capInitializedVisionSource(token) {
+  const maxRangePx = getMaxRangePx(token);
+  if (!maxRangePx || !token?.vision) return;
+
+  const source = token.vision;
+  const data = source.data ?? source._source ?? null;
+  if (data && typeof data === "object") {
+    for (const key of ["radius", "externalRadius", "sightRange", "visionRange", "range"]) {
+      if (key in data) data[key] = capPixelRange(token, Number(data[key]));
+    }
   }
 
-  const TokenClass = getTokenClass();
-  const proto = TokenClass?.prototype;
-  const current = proto?.initializeVisionSource;
-  if (typeof current !== "function") return false;
-  if (current[WRAPPED_INITIALIZE_VISION_SOURCE]) return true;
-
-  const wrapped = function visionRestrictorInitializeVisionSource(...args) {
-    const result = current.apply(this, args);
-    capInitializedVisionSource(this);
-    return result;
-  };
-  wrapped[WRAPPED_INITIALIZE_VISION_SOURCE] = true;
-
-  Object.defineProperty(proto, "initializeVisionSource", {
-    configurable: true,
-    writable: true,
-    value: wrapped
-  });
-
-  console.log(`${MODULE_ID} | Token initializeVisionSource post-cap installed directly.`);
-  return true;
+  for (const key of ["radius", "externalRadius", "sightRange", "visionRange", "range"]) {
+    if (key in source) source[key] = capPixelRange(token, Number(source[key]));
+  }
 }
 
 function patchTokenRangeGetters() {
@@ -230,12 +194,11 @@ function patchTokenRangeGetters() {
     return false;
   }
 
-  const sightRangeDescriptor = findPropertyDescriptor(proto, "sightRange");
-  const optimalSightRangeDescriptor = findPropertyDescriptor(proto, "optimalSightRange");
-  let installed = false;
+  originalSightRangeDescriptor = findPropertyDescriptor(proto, "sightRange");
+  originalOptimalSightRangeDescriptor = findPropertyDescriptor(proto, "optimalSightRange");
 
-  if (sightRangeDescriptor?.get && !sightRangeDescriptor.get[WRAPPED_SIGHT_RANGE]) {
-    const originalGet = sightRangeDescriptor.get;
+  if (originalSightRangeDescriptor?.get && !originalSightRangeDescriptor.get[WRAPPED_SIGHT_RANGE]) {
+    const originalGet = originalSightRangeDescriptor.get;
     const wrappedGet = function visionRestrictorSightRange() {
       return capPixelRange(this, originalGet.call(this));
     };
@@ -245,11 +208,10 @@ function patchTokenRangeGetters() {
       configurable: true,
       get: wrappedGet
     });
-    installed = true;
   }
 
-  if (optimalSightRangeDescriptor?.get && !optimalSightRangeDescriptor.get[WRAPPED_OPTIMAL_SIGHT_RANGE]) {
-    const originalGet = optimalSightRangeDescriptor.get;
+  if (originalOptimalSightRangeDescriptor?.get && !originalOptimalSightRangeDescriptor.get[WRAPPED_OPTIMAL_SIGHT_RANGE]) {
+    const originalGet = originalOptimalSightRangeDescriptor.get;
     const wrappedGet = function visionRestrictorOptimalSightRange() {
       return capPixelRange(this, originalGet.call(this));
     };
@@ -259,25 +221,211 @@ function patchTokenRangeGetters() {
       configurable: true,
       get: wrappedGet
     });
-    installed = true;
   }
 
-  if (installed) console.log(`${MODULE_ID} | Token vision range getter cap installed.`);
-  return installed;
+  console.log(`${MODULE_ID} | Token vision range getter cap installed.`);
+  return true;
 }
 
 function patchTokenVision() {
   const dataPatch = patchTokenVisionSourceData();
-  const initializePatch = patchTokenInitializeVisionSource();
   const getterPatch = patchTokenRangeGetters();
-  return dataPatch || initializePatch || getterPatch;
+  return dataPatch || getterPatch;
 }
+
+function getSceneRect() {
+  const d = canvas?.dimensions;
+  if (!d) return { x: 0, y: 0, width: 0, height: 0 };
+
+  const r = d.sceneRect ?? d.rect ?? null;
+  if (r && Number.isFinite(r.width) && Number.isFinite(r.height)) {
+    return { x: r.x ?? 0, y: r.y ?? 0, width: r.width, height: r.height };
+  }
+
+  return {
+    x: d.sceneX ?? 0,
+    y: d.sceneY ?? 0,
+    width: d.sceneWidth ?? d.width ?? 0,
+    height: d.sceneHeight ?? d.height ?? 0
+  };
+}
+
+function getHardMaskAlpha() {
+  const alpha = Number(game.settings.get(MODULE_ID, SETTING_HARD_MASK_ALPHA));
+  if (!Number.isFinite(alpha)) return 1;
+  return Math.clamp ? Math.clamp(alpha, 0, 1) : Math.max(0, Math.min(1, alpha));
+}
+
+function ensureHardMask() {
+  if (!canvas?.stage || !globalThis.PIXI?.Graphics) return null;
+
+  if (!hardMask || hardMask.destroyed) {
+    hardMask = new PIXI.Graphics();
+    hardMask.name = `${MODULE_ID}.hardVisionMask`;
+    hardMask.eventMode = "none";
+    hardMask.interactive = false;
+    hardMask.zIndex = 1_000_000;
+  }
+
+  if (hardMask.parent !== canvas.stage) canvas.stage.addChild(hardMask);
+  // addChild on an existing child moves it to the top, which matters if other
+  // canvas groups are added after us during a redraw.
+  canvas.stage.addChild(hardMask);
+  return hardMask;
+}
+
+function hideHardMask() {
+  if (!hardMask) return;
+  hardMask.visible = false;
+  try { hardMask.clear(); } catch (_) { /* no-op */ }
+}
+
+function tokenOwnedByUser(token) {
+  return Boolean(token?.isOwner ?? token?.document?.isOwner ?? token?.actor?.isOwner ?? token?.observer);
+}
+
+function getVisionRestrictorPovTokens() {
+  if (!canvas?.tokens) return [];
+
+  const controlled = canvas.tokens.controlled ?? [];
+  let tokens = controlled;
+
+  // Players normally see through controlled tokens, but if none are controlled
+  // they may still see through all tokens they own. Preserve that behavior.
+  if (!tokens.length && !game.user.isGM) {
+    tokens = (canvas.tokens.placeables ?? []).filter(tokenOwnedByUser);
+  }
+
+  // Do not impose a hard GM mask unless the GM has explicitly hooked/controlled
+  // one or more tokens. This keeps scene prep usable.
+  if (!tokens.length) return [];
+
+  return tokens.filter((token) => {
+    if (!token || token.destroyed) return false;
+    if (token.document?.hidden && !game.user.isGM) return false;
+    if (token.document?.sight?.enabled === false) return false;
+    if (!getMaxRangePx(token)) return false;
+
+    const sourceData = safeVisionSourceData(token);
+    if (sourceData?.disabled === true) return false;
+    return true;
+  });
+}
+
+function safeVisionSourceData(token) {
+  try {
+    return typeof token?._getVisionSourceData === "function" ? token._getVisionSourceData() : null;
+  } catch (err) {
+    console.warn(`${MODULE_ID} | Could not read token vision source data for ${token?.name ?? "token"}.`, err);
+    return null;
+  }
+}
+
+function getHardMaskRadiusPx(token) {
+  const maxRangePx = getMaxRangePx(token);
+  if (!maxRangePx) return 0;
+
+  const sourceData = safeVisionSourceData(token);
+  const sourceRadius = Number(sourceData?.radius ?? token?.vision?.data?.radius ?? token?.vision?.radius);
+  if (Number.isFinite(sourceRadius) && sourceRadius > 0) return Math.min(sourceRadius, maxRangePx);
+
+  // In globally illuminated scenes, Foundry may make the scene visible via the
+  // lighting/visibility group rather than via a finite token radius. The hard
+  // mask is specifically the environmental obscurity cap, so fall back to the
+  // configured cap rather than leaving daylight unrestricted.
+  return maxRangePx;
+}
+
+function drawHardMaskV8(graphics, rect, holes, alpha) {
+  graphics.clear();
+  graphics.rect(rect.x, rect.y, rect.width, rect.height).fill({ color: 0x000000, alpha });
+  for (const hole of holes) graphics.circle(hole.x, hole.y, hole.radius).cut();
+}
+
+function drawHardMaskLegacy(graphics, rect, holes, alpha) {
+  graphics.clear();
+  graphics.beginFill(0x000000, alpha);
+  graphics.drawRect(rect.x, rect.y, rect.width, rect.height);
+  for (const hole of holes) {
+    graphics.beginHole();
+    graphics.drawCircle(hole.x, hole.y, hole.radius);
+    graphics.endHole();
+  }
+  graphics.endFill();
+}
+
+function refreshHardMask() {
+  if (!canvas?.ready) {
+    hideHardMask();
+    return;
+  }
+
+  const maxRange = getSceneMaxRange();
+  if (!maxRange) {
+    hideHardMask();
+    return;
+  }
+
+  // Only mask scenes that use token vision. Without token vision, there is no
+  // POV token selection to follow.
+  if (canvas.visibility?.tokenVision === false) {
+    hideHardMask();
+    return;
+  }
+
+  const povTokens = getVisionRestrictorPovTokens();
+  if (!povTokens.length) {
+    hideHardMask();
+    return;
+  }
+
+  const holes = povTokens.map((token) => {
+    const center = token.center ?? { x: token.x, y: token.y };
+    return {
+      x: center.x,
+      y: center.y,
+      radius: getHardMaskRadiusPx(token),
+      token
+    };
+  }).filter((hole) => Number.isFinite(hole.x) && Number.isFinite(hole.y) && Number.isFinite(hole.radius) && hole.radius > 0);
+
+  if (!holes.length) {
+    hideHardMask();
+    return;
+  }
+
+  const graphics = ensureHardMask();
+  if (!graphics) return;
+
+  const rect = getSceneRect();
+  const alpha = getHardMaskAlpha();
+
+  try {
+    if (typeof graphics.rect === "function" && typeof graphics.circle === "function" && typeof graphics.cut === "function") {
+      drawHardMaskV8(graphics, rect, holes, alpha);
+    } else {
+      drawHardMaskLegacy(graphics, rect, holes, alpha);
+    }
+    graphics.visible = alpha > 0;
+  } catch (err) {
+    console.warn(`${MODULE_ID} | Could not draw hard vision mask.`, err);
+    hideHardMask();
+  }
+}
+
+function queueHardMaskRefresh() {
+  if (typeof foundry?.utils?.debounce === "function") return debouncedHardMaskRefresh();
+  return setTimeout(refreshHardMask, 0);
+}
+
+const debouncedHardMaskRefresh = foundry?.utils?.debounce
+  ? foundry.utils.debounce(refreshHardMask, 25)
+  : refreshHardMask;
 
 function refreshVision() {
   if (!canvas?.ready) return;
 
   try {
-    canvas.visibility?.initializeSources?.();
     for (const token of canvas.tokens?.placeables ?? []) token.initializeSources?.();
 
     if (typeof canvas.perception?.initialize === "function") {
@@ -294,10 +442,11 @@ function refreshVision() {
 
     canvas.effects?.refreshLighting?.();
     canvas.visibility?.refresh?.();
-    canvas.visibility?.refreshVisibility?.();
   } catch (err) {
     console.warn(`${MODULE_ID} | Could not refresh canvas perception.`, err);
   }
+
+  queueHardMaskRefresh();
 }
 
 async function setSceneMaxRange(range, scene = getActiveScene()) {
@@ -305,6 +454,7 @@ async function setSceneMaxRange(range, scene = getActiveScene()) {
     ui.notifications.warn(localize("notifications.worldOnly"));
     return;
   }
+
   if (!scene) return;
 
   const normalized = normalizeRange(range);
@@ -315,6 +465,7 @@ async function setSceneMaxRange(range, scene = getActiveScene()) {
     await scene.setFlag(MODULE_ID, FLAG_MAX_RANGE, normalized);
     ui.notifications.info(format("notifications.sceneSet", { range: normalized }));
   }
+
   refreshVision();
 }
 
@@ -328,12 +479,13 @@ function injectSceneConfig(app, html) {
   if (!scene) return;
 
   const form = element.querySelector("form") ?? element;
-  form.querySelector(`[${SCENE_CONFIG_ATTR}]`)?.remove();
+  form.querySelector(`[data-${MODULE_ID}-scene-config]`)?.remove();
 
   const current = safeGetFlag(scene, MODULE_ID, FLAG_MAX_RANGE);
+
   const fieldset = document.createElement("fieldset");
   fieldset.classList.add("vision-restrictor-fieldset");
-  fieldset.setAttribute(SCENE_CONFIG_ATTR, "true");
+  fieldset.setAttribute(`data-${MODULE_ID}-scene-config`, "true");
 
   const legend = document.createElement("legend");
   legend.textContent = localize("sceneConfig.legend");
@@ -367,51 +519,53 @@ function injectSceneConfig(app, html) {
   hint.textContent = localize("sceneConfig.fieldHint");
   fieldset.append(hint);
 
-  const target =
-    form.querySelector('[data-application-part="visibility"]') ??
-    form.querySelector('.tab[data-tab="visibility"]') ??
-    form.querySelector('[data-tab="visibility"]') ??
-    form.querySelector('.tab.active') ??
-    form;
+  const target = form.querySelector('[data-application-part="visibility"]')
+    ?? form.querySelector('.tab[data-tab="visibility"]')
+    ?? form.querySelector('[data-tab="visibility"]')
+    ?? form.querySelector('.tab.active')
+    ?? form;
 
   target.append(fieldset);
 }
 
-function getTokenDebug(token) {
-  const sourceData = typeof token?._getVisionSourceData === "function" ? token._getVisionSourceData() : null;
+function debugState() {
   return {
-    name: token?.name,
-    sceneMaxRangeUnits: getSceneMaxRange(token?.scene),
-    maxRangePx: getMaxRangePx(token),
-    sightRange: token?.sightRange,
-    optimalSightRange: token?.optimalSightRange,
-    sourceData,
-    initializedVisionSourceData: token?.vision?.data ?? null,
-    initializedVisionSourceRadius: token?.vision?.data?.radius ?? token?.vision?.radius ?? null,
-    canvasTokenVision: canvas?.visibility?.tokenVision,
-    isGM: game.user.isGM,
-    controlled: token?.controlled
+    moduleId: MODULE_ID,
+    active: game.modules.get(MODULE_ID)?.active ?? false,
+    libWrapperActive: Boolean(globalThis.libWrapper?.register),
+    scene: getActiveScene()?.name ?? null,
+    sceneOverride: safeGetFlag(getActiveScene(), MODULE_ID, FLAG_MAX_RANGE),
+    worldDefault: game.settings.get(MODULE_ID, SETTING_DEFAULT_MAX_RANGE),
+    effectiveMaxRangeUnits: getSceneMaxRange(),
+    hardMaskAlpha: getHardMaskAlpha(),
+    hardMaskVisible: hardMask?.visible ?? false,
+    hardMaskParent: hardMask?.parent?.name ?? hardMask?.parent?.constructor?.name ?? null,
+    canvasReady: canvas?.ready ?? false,
+    canvasTokenVision: canvas?.visibility?.tokenVision ?? null,
+    controlledTokens: debugControlledTokens()
   };
 }
 
 function debugControlledTokens() {
-  return (canvas.tokens?.controlled ?? []).map((token) => getTokenDebug(token));
-}
+  return (canvas.tokens?.controlled ?? []).map((token) => {
+    const sourceData = safeVisionSourceData(token);
+    const initializedVisionSourceData = token.vision?.data ?? token.vision?._source ?? null;
 
-function debugState() {
-  const scene = getActiveScene();
-  return {
-    moduleId: MODULE_ID,
-    active: game.modules.get(MODULE_ID)?.active,
-    libWrapperActive: canUseLibWrapper(),
-    scene: scene?.name,
-    sceneOverride: safeGetFlag(scene, MODULE_ID, FLAG_MAX_RANGE),
-    worldDefault: game.settings.get(MODULE_ID, SETTING_DEFAULT_MAX_RANGE),
-    effectiveMaxRangeUnits: getSceneMaxRange(scene),
-    canvasReady: canvas?.ready,
-    canvasTokenVision: canvas?.visibility?.tokenVision,
-    controlledTokens: debugControlledTokens()
-  };
+    return {
+      name: token.name,
+      sceneMaxRangeUnits: getSceneMaxRange(token.scene),
+      maxRangePx: getMaxRangePx(token),
+      hardMaskRadiusPx: getHardMaskRadiusPx(token),
+      sightRange: token.sightRange,
+      optimalSightRange: token.optimalSightRange,
+      sourceData,
+      initializedVisionSourceData,
+      initializedVisionSourceRadius: token.vision?.data?.radius ?? token.vision?.radius ?? null,
+      canvasTokenVision: canvas?.visibility?.tokenVision ?? null,
+      isGM: game.user.isGM,
+      controlled: token.controlled
+    };
+  });
 }
 
 Hooks.once("init", () => {
@@ -426,10 +580,23 @@ Hooks.once("init", () => {
     onChange: refreshVision
   });
 
+  game.settings.register(MODULE_ID, SETTING_HARD_MASK_ALPHA, {
+    name: localize("settings.hardMaskAlpha.name"),
+    hint: localize("settings.hardMaskAlpha.hint"),
+    scope: "world",
+    config: true,
+    restricted: true,
+    type: Number,
+    default: 1,
+    onChange: queueHardMaskRefresh
+  });
+
   patchTokenVision();
 });
 
 Hooks.once("ready", () => {
+  // Re-apply after systems/modules such as dnd5e or Vision 5e finish any late
+  // token vision patching. The wrapper is idempotent.
   patchTokenVision();
 
   const module = game.modules.get(MODULE_ID);
@@ -438,8 +605,9 @@ Hooks.once("ready", () => {
     setSceneMaxRange,
     clearSceneMaxRange: (scene = getActiveScene()) => setSceneMaxRange(null, scene),
     refreshVision,
-    debugControlledTokens,
-    debugState
+    refreshHardMask,
+    debugState,
+    debugControlledTokens
   };
 
   refreshVision();
@@ -450,8 +618,20 @@ Hooks.on("canvasReady", () => {
   refreshVision();
 });
 
+Hooks.on("canvasTearDown", () => {
+  hideHardMask();
+  hardMask = null;
+});
+
 Hooks.on("updateScene", (scene, changes) => {
   if (foundry.utils.hasProperty(changes, `flags.${MODULE_ID}.${FLAG_MAX_RANGE}`)) refreshVision();
 });
 
+Hooks.on("controlToken", queueHardMaskRefresh);
+Hooks.on("refreshToken", queueHardMaskRefresh);
+Hooks.on("updateToken", queueHardMaskRefresh);
+Hooks.on("createToken", queueHardMaskRefresh);
+Hooks.on("deleteToken", queueHardMaskRefresh);
+Hooks.on("sightRefresh", queueHardMaskRefresh);
+Hooks.on("visibilityRefresh", queueHardMaskRefresh);
 Hooks.on("renderSceneConfig", injectSceneConfig);
