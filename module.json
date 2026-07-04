@@ -1,5 +1,5 @@
 {
-  "id": "vision-restrictor",
+  "id": "vision-restrictor-module",
   "title": "Vision Restrictor",
   "description": "Caps token vision at a GM-configured maximum range for scenes, useful for fog, smoke, haze, blizzards, or large open maps.",
   "version": "0.1.0",
