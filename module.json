@@ -1,0 +1,28 @@
+{
+  "id": "vision-restrictor",
+  "title": "Vision Restrictor",
+  "description": "Caps token vision at a GM-configured maximum range for scenes, useful for fog, smoke, haze, blizzards, or large open maps.",
+  "version": "0.1.0",
+  "authors": [
+    {
+      "name": "Alan Johnson"
+    }
+  ],
+  "compatibility": {
+    "minimum": "14",
+    "verified": "14.364"
+  },
+  "esmodules": [
+    "scripts/vision-restrictor.js"
+  ],
+  "styles": [
+    "styles/vision-restrictor.css"
+  ],
+  "languages": [
+    {
+      "lang": "en",
+      "name": "English",
+      "path": "lang/en.json"
+    }
+  ]
+}
