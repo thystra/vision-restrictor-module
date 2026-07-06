@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Vision Restrictor for Foundry Virtual Tabletop
+# Copyright (C) 2026 Alan Johnson and contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 set -euo pipefail
 
 MODULE_ID="vision-restrictor-module"

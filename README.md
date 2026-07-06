@@ -1,5 +1,7 @@
 # Vision Restrictor
 
+[![License: GPL v3 or later](https://img.shields.io/badge/License-GPLv3%2B-blue.svg)](LICENSE)
+
 A small Foundry VTT V14 module that caps token vision to a GM-configured maximum range for a scene. Example: set a scene to 75 feet to represent heavy fog, smoke, rain, snow, haze, or other conditions that prevent tokens from seeing farther than 75 feet.
 
 ## Install for local testing
@@ -83,3 +85,12 @@ The configured range is interpreted in the active scene distance units, such as 
 
 This version also avoids writing directly to getter-only Foundry V14 `PointVisionSource` properties, which previously caused token control and movement errors.
 
+## Support / Tips
+
+If Vision Restrictor is useful at your table, tips are appreciated. GitHub uses  to populate the repository Sponsor button.
+
+- GitHub Sponsors: https://github.com/sponsors/thystra
+
+## License
+
+Vision Restrictor is licensed under the GNU General Public License v3.0 or later (). See [LICENSE](LICENSE).
