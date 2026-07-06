@@ -1,8 +1,8 @@
 {
   "VISIONRESTRICTOR.settings.defaultMaxRange.name": "Default Maximum Vision Range",
-  "VISIONRESTRICTOR.settings.defaultMaxRange.hint": "Maximum token vision range in scene distance units, such as feet or meters depending on the scene. Use 0 to disable globally. A scene can override this value.",
+  "VISIONRESTRICTOR.settings.defaultMaxRange.hint": "Maximum hard vision range in scene distance units, such as feet or meters depending on the scene. Use 0 to disable globally. A scene can override this value.",
   "VISIONRESTRICTOR.sceneConfig.fieldLabel": "Maximum Vision Range",
-  "VISIONRESTRICTOR.sceneConfig.fieldHint": "Hard-caps token vision on this scene using the scene distance units, such as feet or meters. Leave blank to use the world default. Use 0 to disable on this scene.",
+  "VISIONRESTRICTOR.sceneConfig.fieldHint": "Hard-caps token vision on this scene using the scene distance units, such as feet or meters. Leave blank to use the world default. Use 0 to disable on this scene. The hard blackout radius uses this configured range even for special senses such as blindsight.",
   "VISIONRESTRICTOR.sceneConfig.legend": "Vision Restrictor",
   "VISIONRESTRICTOR.notifications.sceneSet": "Vision Restrictor: scene maximum vision set to {range}.",
   "VISIONRESTRICTOR.notifications.sceneCleared": "Vision Restrictor: scene override cleared; using world default.",

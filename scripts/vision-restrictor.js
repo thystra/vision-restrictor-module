@@ -11,6 +11,7 @@ const WRAPPED_OPTIMAL_SIGHT_RANGE = Symbol.for(`${MODULE_ID}.wrappedOptimalSight
 let originalSightRangeDescriptor = null;
 let originalOptimalSightRangeDescriptor = null;
 let hardMask = null;
+let lastHardMaskHoles = [];
 
 function localize(key) {
   return game.i18n.localize(`VISIONRESTRICTOR.${key}`);
@@ -169,21 +170,43 @@ function patchTokenVisionSourceData() {
   return true;
 }
 
+function setMutableCappedRange(target, key, token) {
+  if (!target || typeof target !== "object" || !(key in target)) return;
+
+  const current = Number(target[key]);
+  const capped = capPixelRange(token, current);
+  if (!Number.isFinite(capped) || capped === current) return;
+
+  try {
+    target[key] = capped;
+  } catch (err) {
+    // Some Foundry V14 VisionSource fields are getter-only. Never let a
+    // defensive cap attempt break token control, movement, or player canvas
+    // rendering.
+    console.debug(`${MODULE_ID} | Skipped read-only vision source field ${key}.`, err);
+  }
+}
+
 function capInitializedVisionSource(token) {
   const maxRangePx = getMaxRangePx(token);
   if (!maxRangePx || !token?.vision) return;
 
   const source = token.vision;
-  const data = source.data ?? source._source ?? null;
-  if (data && typeof data === "object") {
+  const dataTargets = [];
+  if (source.data && typeof source.data === "object") dataTargets.push(source.data);
+  if (source._source && typeof source._source === "object" && source._source !== source.data) dataTargets.push(source._source);
+
+  for (const data of dataTargets) {
     for (const key of ["radius", "externalRadius", "sightRange", "visionRange", "range"]) {
-      if (key in data) data[key] = capPixelRange(token, Number(data[key]));
+      setMutableCappedRange(data, key, token);
     }
   }
 
-  for (const key of ["radius", "externalRadius", "sightRange", "visionRange", "range"]) {
-    if (key in source) source[key] = capPixelRange(token, Number(source[key]));
-  }
+  // Do not assign directly to PointVisionSource#radius or similar source
+  // accessors. In Foundry V14 some of these are getter-only, and throwing here
+  // breaks token control and drag movement. The _getVisionSourceData wrapper is
+  // the authoritative cap for newly initialized source data; this function is
+  // only best-effort cleanup of mutable data bags.
 }
 
 function patchTokenRangeGetters() {
@@ -264,6 +287,8 @@ function ensureHardMask() {
     hardMask.name = `${MODULE_ID}.hardVisionMask`;
     hardMask.eventMode = "none";
     hardMask.interactive = false;
+    hardMask.interactiveChildren = false;
+    hardMask.hitArea = null;
     hardMask.zIndex = 1_000_000;
   }
 
@@ -275,13 +300,27 @@ function ensureHardMask() {
 }
 
 function hideHardMask() {
+  lastHardMaskHoles = [];
   if (!hardMask) return;
   hardMask.visible = false;
   try { hardMask.clear(); } catch (_) { /* no-op */ }
 }
 
 function tokenOwnedByUser(token) {
-  return Boolean(token?.isOwner ?? token?.document?.isOwner ?? token?.actor?.isOwner ?? token?.observer);
+  if (!token) return false;
+  if (game.user?.isGM) return true;
+  if (token.document?.hidden) return false;
+  if (token.controlled) return true;
+
+  try {
+    if (typeof token.actor?.testUserPermission === "function" && token.actor.testUserPermission(game.user, "OWNER")) return true;
+  } catch (_) { /* no-op */ }
+
+  try {
+    if (typeof token.document?.testUserPermission === "function" && token.document.testUserPermission(game.user, "OWNER")) return true;
+  } catch (_) { /* no-op */ }
+
+  return Boolean(token.actor?.isOwner ?? token.document?.isOwner ?? token.isOwner ?? false);
 }
 
 function getVisionRestrictorPovTokens() {
@@ -322,18 +361,13 @@ function safeVisionSourceData(token) {
 }
 
 function getHardMaskRadiusPx(token) {
-  const maxRangePx = getMaxRangePx(token);
-  if (!maxRangePx) return 0;
-
-  const sourceData = safeVisionSourceData(token);
-  const sourceRadius = Number(sourceData?.radius ?? token?.vision?.data?.radius ?? token?.vision?.radius);
-  if (Number.isFinite(sourceRadius) && sourceRadius > 0) return Math.min(sourceRadius, maxRangePx);
-
-  // In globally illuminated scenes, Foundry may make the scene visible via the
-  // lighting/visibility group rather than via a finite token radius. The hard
-  // mask is specifically the environmental obscurity cap, so fall back to the
-  // configured cap rather than leaving daylight unrestricted.
-  return maxRangePx;
+  // The hard blackout mask represents an environmental visibility limit
+  // such as fog, smoke, haze, or magical obscurity. It should use the
+  // configured scene-unit range directly, not the token's currently active
+  // sense radius. This matters for special senses such as blindsight: a token
+  // may have a 10 ft blindsight source while still being in a globally lit
+  // scene where the environmental fog cap should be 55 ft.
+  return getMaxRangePx(token);
 }
 
 function drawHardMaskV8(graphics, rect, holes, alpha) {
@@ -393,6 +427,13 @@ function refreshHardMask() {
     hideHardMask();
     return;
   }
+
+  lastHardMaskHoles = holes.map((hole) => ({
+    tokenName: hole.token?.name ?? null,
+    x: hole.x,
+    y: hole.y,
+    radius: hole.radius
+  }));
 
   const graphics = ensureHardMask();
   if (!graphics) return;
@@ -540,6 +581,7 @@ function debugState() {
     hardMaskAlpha: getHardMaskAlpha(),
     hardMaskVisible: hardMask?.visible ?? false,
     hardMaskParent: hardMask?.parent?.name ?? hardMask?.parent?.constructor?.name ?? null,
+    hardMaskHoles: lastHardMaskHoles,
     canvasReady: canvas?.ready ?? false,
     canvasTokenVision: canvas?.visibility?.tokenVision ?? null,
     controlledTokens: debugControlledTokens()

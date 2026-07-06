@@ -77,3 +77,9 @@ Vision Restrictor now applies a hard blackout mask outside the configured range.
 
 This is intentional for fog, smoke, haze, blizzards, darkness-like magical obscurity, or other effects that block sight even when the scene has daylight or global illumination enabled. Use `0` on a scene to disable the cap for that scene.
 
+### v0.1.6 behavior note
+
+The configured range is interpreted in the active scene distance units, such as feet or meters, not grid squares. The hard blackout mask uses that configured environmental cap even if the token has a shorter special-sense source such as blindsight. Foundry's own vision calculation still determines what the token can actually see inside the unmasked area.
+
+This version also avoids writing directly to getter-only Foundry V14 `PointVisionSource` properties, which previously caused token control and movement errors.
+
