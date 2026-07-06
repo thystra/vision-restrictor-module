@@ -1,5 +1,7 @@
 # GitHub displays these links on the repository Sponsor button.
 # Configure additional platforms as needed: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository
 github: [thystra]
-# custom:
-#   - https://example.com/your-tip-link
+# .github/FUNDING.yml
+ko_fi: thewolfandtheraven
+custom:
+  - https://www.wolfandraven.blog
