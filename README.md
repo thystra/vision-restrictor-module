@@ -81,3 +81,27 @@ AI was used in the creation of this module.
 ## License
 
 Vision Restrictor is licensed under the GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
+
+
+## Release workflow
+
+This repository includes `.github/workflows/release.yml` to package the module and publish a release to FoundryMods when a GitHub release is published.
+
+Before using it, add this repository secret in GitHub:
+
+```text
+FOUNDRYMODS_TOKEN
+```
+
+Generate the token from the claimed module page on FoundryMods. Use the manual workflow dispatch with `dry_run: true` first. The workflow uploads these release assets to the GitHub release before notifying FoundryMods:
+
+```text
+module.json
+vision-restrictor-module.zip
+```
+
+FoundryMods reads the package id, version, and Foundry compatibility from the release-specific `module.json` asset. The stable Foundry install/update manifest remains:
+
+```text
+https://github.com/thystra/vision-restrictor-module/releases/latest/download/module.json
+```

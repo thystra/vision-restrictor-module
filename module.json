@@ -1,8 +1,8 @@
 {
   "id": "vision-restrictor-module",
   "title": "Vision Restrictor",
-  "description": "Caps token vision at a GM-configured maximum range for scenes, useful for fog, smoke, haze, blizzards, or large open maps.",
-  "version": "0.1.7",
+  "description": "Applies a GM-configured hard maximum vision range for scenes, useful for fog, smoke, haze, blizzards, magical obscurity, or large open maps. The range is interpreted in the scene's configured distance units.",
+  "version": "0.1.8",
   "url": "https://github.com/thystra/vision-restrictor-module",
   "manifest": "https://github.com/thystra/vision-restrictor-module/releases/latest/download/module.json",
   "download": "https://github.com/thystra/vision-restrictor-module/releases/latest/download/vision-restrictor-module.zip",
@@ -20,6 +20,15 @@
     "minimum": "14",
     "verified": "14.364"
   },
+  "relationships": {
+    "recommends": [
+      {
+        "id": "lib-wrapper",
+        "type": "module",
+        "reason": "Recommended for safer interoperability with other modules that wrap Foundry token and vision methods. Vision Restrictor falls back to direct wrapping if libWrapper is not installed."
+      }
+    ]
+  },
   "esmodules": [
     "scripts/vision-restrictor.js"
   ],
@@ -36,5 +45,6 @@
   "license": "LICENSE",
   "readme": "README.md",
   "bugs": "https://github.com/thystra/vision-restrictor-module/issues",
-  "changelog": "https://github.com/thystra/vision-restrictor-module/releases"
+  "changelog": "https://github.com/thystra/vision-restrictor-module/releases",
+  "library": false
 }
