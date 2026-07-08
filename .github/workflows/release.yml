@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing GitHub release tag to publish, for example v0.1.8"
+        description: "Existing GitHub release tag to publish, for example v0.1.9"
         required: true
         type: string
       dry_run:
@@ -45,7 +45,7 @@ jobs:
           fi
 
       - name: Check out release tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ steps.release_info.outputs.tag }}
           fetch-depth: 0
@@ -55,16 +55,17 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m json.tool module.json >/dev/null
-          python3 - <<'PY'
+          python3 - <<'PY_VALIDATE'
           import json
           from pathlib import Path
-          m = json.loads(Path("module.json").read_text())
+          m = json.loads(Path("module.json").read_text(encoding="utf-8"))
           assert m["id"] == "vision-restrictor-module", m["id"]
+          assert m["title"] == "Vision Restrictor", m["title"]
           assert m["compatibility"]["minimum"].startswith("14"), m["compatibility"]
           assert m["compatibility"]["verified"].startswith("14"), m["compatibility"]
           assert m.get("manifest", "").endswith("/releases/latest/download/module.json"), m.get("manifest")
           assert m.get("download", "").endswith("/releases/latest/download/vision-restrictor-module.zip"), m.get("download")
-          PY
+          PY_VALIDATE
 
       - name: Install packaging tools
         shell: bash
@@ -91,7 +92,6 @@ jobs:
             dist/module.json \
             dist/vision-restrictor-module.zip \
             --clobber
-          # Give GitHub release assets a moment to become fetchable by FoundryMods.
           sleep 5
 
       - name: Publish to FoundryMods
@@ -113,6 +113,7 @@ jobs:
           NOTES
 
           scripts/publish-foundrymods.sh \
+            --id "vision-restrictor-module" \
             --dry-run "$DRY_RUN" \
             --discord-announce "$DISCORD_ANNOUNCE" \
             --manifest-url "$MANIFEST_URL" \
