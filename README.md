@@ -114,3 +114,7 @@ If the FoundryMods release API returns an error like `id mismatch: expected Visi
 
 Do **not** change `module.json` to `Vision Restrictor`; Foundry package ids must be lowercase package identifiers and must match the module folder. On FoundryMods, save the module page with Module ID / URL Slug set to `vision-restrictor-module`, then generate a fresh Package Release Token from that same module page and update the GitHub repository secret named `FOUNDRYMODS_TOKEN`.
 
+
+### FoundryMods release note
+
+The GitHub Actions workflow sends FoundryMods a version-specific manifest from `raw.githubusercontent.com` for the release tag. This avoids server-side fetch issues with GitHub release-asset redirects while still publishing the packaged release zip as a GitHub release asset.

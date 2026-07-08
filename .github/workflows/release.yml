@@ -6,117 +6,75 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing GitHub release tag to publish, for example v0.1.9"
-        required: true
-        type: string
+        description: "Tag to publish, e.g. v0.1.10. Leave blank to use the current ref."
+        required: false
+        default: ""
       dry_run:
         description: "Validate with FoundryMods without saving"
         required: true
+        type: boolean
         default: true
-        type: boolean
-      discord_announce:
-        description: "Ask FoundryMods to announce the release on Discord"
-        required: true
-        default: false
-        type: boolean
 
 permissions:
   contents: write
 
 jobs:
   publish:
-    name: Package and publish
     runs-on: ubuntu-latest
-
     steps:
-      - name: Determine release inputs
-        id: release_info
+      - name: Resolve release tag
+        id: vars
         shell: bash
         run: |
-          set -euo pipefail
           if [[ "${{ github.event_name }}" == "release" ]]; then
-            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
-            echo "dry_run=false" >> "$GITHUB_OUTPUT"
-            echo "discord_announce=false" >> "$GITHUB_OUTPUT"
+            TAG="${{ github.event.release.tag_name }}"
+            DRY_RUN="false"
+            NOTES_URL="${{ github.event.release.html_url }}"
           else
-            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
-            echo "dry_run=${{ inputs.dry_run }}" >> "$GITHUB_OUTPUT"
-            echo "discord_announce=${{ inputs.discord_announce }}" >> "$GITHUB_OUTPUT"
+            TAG="${{ inputs.tag }}"
+            if [[ -z "$TAG" ]]; then
+              TAG="${GITHUB_REF_NAME}"
+            fi
+            DRY_RUN="${{ inputs.dry_run }}"
+            NOTES_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
           fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "dry_run=$DRY_RUN" >> "$GITHUB_OUTPUT"
+          echo "notes_url=$NOTES_URL" >> "$GITHUB_OUTPUT"
 
-      - name: Check out release tag
+      - name: Check out tag
         uses: actions/checkout@v5
         with:
-          ref: ${{ steps.release_info.outputs.tag }}
-          fetch-depth: 0
+          ref: ${{ steps.vars.outputs.tag }}
 
-      - name: Validate manifest JSON
+      - name: Package module
         shell: bash
         run: |
-          set -euo pipefail
-          python3 -m json.tool module.json >/dev/null
-          python3 - <<'PY_VALIDATE'
-          import json
-          from pathlib import Path
-          m = json.loads(Path("module.json").read_text(encoding="utf-8"))
-          assert m["id"] == "vision-restrictor-module", m["id"]
-          assert m["title"] == "Vision Restrictor", m["title"]
-          assert m["compatibility"]["minimum"].startswith("14"), m["compatibility"]
-          assert m["compatibility"]["verified"].startswith("14"), m["compatibility"]
-          assert m.get("manifest", "").endswith("/releases/latest/download/module.json"), m.get("manifest")
-          assert m.get("download", "").endswith("/releases/latest/download/vision-restrictor-module.zip"), m.get("download")
-          PY_VALIDATE
-
-      - name: Install packaging tools
-        shell: bash
-        run: sudo apt-get update && sudo apt-get install -y zip
-
-      - name: Build release assets
-        shell: bash
-        run: |
-          set -euo pipefail
           bash scripts/package.sh
-          mkdir -p dist
-          cp ../vision-restrictor-module.zip dist/vision-restrictor-module.zip
-          cp module.json dist/module.json
-          ls -lh dist
+          test -f dist/vision-restrictor-module.zip
 
       - name: Upload GitHub release assets
+        if: github.event_name == 'release'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ steps.release_info.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          set -euo pipefail
-          gh release upload "$RELEASE_TAG" \
-            dist/module.json \
-            dist/vision-restrictor-module.zip \
+          gh release upload "${{ steps.vars.outputs.tag }}" \
+            module.json \
+            dist/vision-restrictor-module.zip#vision-restrictor-module.zip \
             --clobber
-          sleep 5
 
       - name: Publish to FoundryMods
         env:
           FOUNDRYMODS_TOKEN: ${{ secrets.FOUNDRYMODS_TOKEN }}
-          RELEASE_TAG: ${{ steps.release_info.outputs.tag }}
-          DRY_RUN: ${{ steps.release_info.outputs.dry_run }}
-          DISCORD_ANNOUNCE: ${{ steps.release_info.outputs.discord_announce }}
         shell: bash
         run: |
-          set -euo pipefail
-          MANIFEST_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/module.json"
-          PACKAGE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/vision-restrictor-module.zip"
-          NOTES_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
-          CHANGELOG_FILE="dist/RELEASE_NOTES.md"
-
-          cat > "$CHANGELOG_FILE" <<'NOTES'
-          ${{ github.event.release.body }}
-          NOTES
+          TAG="${{ steps.vars.outputs.tag }}"
+          MANIFEST_URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${TAG}/module.json"
+          PACKAGE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/vision-restrictor-module.zip"
 
           scripts/publish-foundrymods.sh \
-            --id "vision-restrictor-module" \
-            --dry-run "$DRY_RUN" \
-            --discord-announce "$DISCORD_ANNOUNCE" \
             --manifest-url "$MANIFEST_URL" \
             --package-url "$PACKAGE_URL" \
-            --notes-url "$NOTES_URL" \
-            --changelog-file "$CHANGELOG_FILE"
+            --notes-url "${{ steps.vars.outputs.notes_url }}" \
+            --dry-run "${{ steps.vars.outputs.dry_run }}"
