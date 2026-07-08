@@ -4,13 +4,9 @@
 
 A small Foundry VTT V14 module that caps token vision to a GM-configured maximum range for a scene. Example: set a scene to 75 feet to represent heavy fog, smoke, rain, snow, haze, or other conditions that prevent tokens from seeing farther than 75 feet.
 
-## Install for local testing
+## Installation
 
-Place this folder at:
-
-```text
-{Foundry User Data}/Data/modules/vision-restrictor-module-module
-```
+Use this URL to install the module: https://github.com/thystra/vision-restrictor-module/releases/latest/download/module.json
 
 Then restart Foundry, enable **Vision Restrictor** in your world, and reload the world.
 
