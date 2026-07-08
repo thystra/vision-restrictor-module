@@ -35,17 +35,6 @@ game.modules.get("vision-restrictor-module").api.clearSceneMaxRange();
 This module caps existing vision. It does not grant vision. A token that cannot see in total darkness should still see nothing; a token with darkvision, light, or another valid visibility source should simply be capped at the configured maximum range.
 
 
-## Release URLs
-
-For a public release, add these fields to `module.json` after you know the repository and release ZIP URLs:
-
-```json
-"url": "https://github.com/thystra/vision-restrictor-module",
-"manifest": "https://raw.githubusercontent.com/thystra/vision-restrictor-module/main/module.json",
-"download": "https://github.com/thystra/vision-restrictor-module/releases/download/v0.1.0/vision-restrictor-module.zip"
-```
-
-
 ## Debugging
 
 With one or more tokens selected, this macro reports the active cap and the capped V14 vision source data:
