@@ -87,6 +87,8 @@ If Vision Restrictor is useful at your table, tips are appreciated. GitHub uses 
 
 - GitHub Sponsors: https://github.com/sponsors/thystra
 
+AI was used in the creation of this module. 
+
 ## License
 
 Vision Restrictor is licensed under the GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
