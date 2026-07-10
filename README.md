@@ -105,20 +105,6 @@ FoundryMods reads the package id, version, and Foundry compatibility from the re
 ```text
 https://github.com/thystra/vision-restrictor-module/releases/latest/download/module.json
 ```
-
-## FoundryMods release API troubleshooting
-
-The Foundry package id for this module is `vision-restrictor-module`. The human-readable title is `Vision Restrictor`.
-
-If the FoundryMods release API returns an error like `id mismatch: expected Vision Restrictor`, the release request is using the correct package id but the `fmp_...` token is likely attached to a FoundryMods package record whose internal id was created from the title instead of the manifest id, or the token was created before the package record was corrected.
-
-Do **not** change `module.json` to `Vision Restrictor`; Foundry package ids must be lowercase package identifiers and must match the module folder. On FoundryMods, save the module page with Module ID / URL Slug set to `vision-restrictor-module`, then generate a fresh Package Release Token from that same module page and update the GitHub repository secret named `FOUNDRYMODS_TOKEN`.
-
-
-### FoundryMods release note
-
-The GitHub Actions workflow sends FoundryMods a version-specific manifest from `raw.githubusercontent.com` for the release tag. This avoids server-side fetch issues with GitHub release-asset redirects while still publishing the packaged release zip as a GitHub release asset.
-
 ## Compatibility
 
 - Foundry Virtual Tabletop: minimum V14; verified on V14.364.
