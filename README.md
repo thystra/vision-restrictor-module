@@ -118,3 +118,11 @@ Do **not** change `module.json` to `Vision Restrictor`; Foundry package ids must
 ### FoundryMods release note
 
 The GitHub Actions workflow sends FoundryMods a version-specific manifest from `raw.githubusercontent.com` for the release tag. This avoids server-side fetch issues with GitHub release-asset redirects while still publishing the packaged release zip as a GitHub release asset.
+
+## Compatibility
+
+- Foundry Virtual Tabletop: minimum V14; verified on V14.364.
+- D&D Fifth Edition system: minimum and verified version 5.3.3.
+- `lib-wrapper` remains recommended, not required.
+
+The module primarily uses Foundry core Scene, Token, canvas, and vision APIs. Other game systems may work, but only D&D5e 5.3.3 is explicitly declared and verified in the current manifest.
